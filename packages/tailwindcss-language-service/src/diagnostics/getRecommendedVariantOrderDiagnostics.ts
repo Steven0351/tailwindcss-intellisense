@@ -1,6 +1,6 @@
 import type { TextDocument } from 'vscode-languageserver-textdocument'
-import { State, Settings } from '../util/state'
-import { RecommendedVariantOrderDiagnostic, DiagnosticKind } from './types'
+import type { State, Settings } from '../util/state'
+import { type RecommendedVariantOrderDiagnostic, DiagnosticKind } from './types'
 import { findClassListsInDocument, getClassNamesInClassList } from '../util/find'
 import * as jit from '../util/jit'
 import { getVariantsFromClassName } from '../util/getVariantsFromClassName'
@@ -10,8 +10,9 @@ import * as semver from '../util/semver'
 export async function getRecommendedVariantOrderDiagnostics(
   state: State,
   document: TextDocument,
-  settings: Settings
+  settings: Settings,
 ): Promise<RecommendedVariantOrderDiagnostic[]> {
+  if (state.v4) return []
   if (!state.jit) return []
 
   if (semver.gte(state.version, '2.99.0')) return []
@@ -30,10 +31,9 @@ export async function getRecommendedVariantOrderDiagnostics(
         return
       }
 
+      let order = state.jitContext.variantOrder ?? state.jitContext.offsets.variantOffsets
       let { variants, offset } = getVariantsFromClassName(state, className.className)
-      let sortedVariants = [...variants].sort((a, b) =>
-        jit.bigSign(state.jitContext.variantOrder.get(b) - state.jitContext.variantOrder.get(a))
-      )
+      let sortedVariants = [...variants].sort((a, b) => jit.bigSign(order.get(b) - order.get(a)))
 
       if (!equalExact(variants, sortedVariants)) {
         diagnostics.push({

@@ -1,5 +1,5 @@
-import { State, Settings } from '../util/state'
-import { InvalidConfigPathDiagnostic, DiagnosticKind } from './types'
+import type { State, Settings } from '../util/state'
+import { type InvalidConfigPathDiagnostic, DiagnosticKind } from './types'
 import { findHelperFunctionsInDocument } from '../util/find'
 import { stringToPath } from '../util/stringToPath'
 import isObject from '../util/isObject'
@@ -20,15 +20,24 @@ function pathToString(path: string | string[]): string {
 export function validateConfigPath(
   state: State,
   path: string | string[],
-  base: string[] = []
+  base: string[] = [],
 ): { isValid: true; value: any } | { isValid: false; reason: string; suggestions: string[] } {
   let keys = Array.isArray(path) ? path : stringToPath(path)
-  let value = dlv(state.config, [...base, ...keys])
+  let fullPath = [...base, ...keys]
+  let value = dlv(state.config, fullPath)
   let suggestions: string[] = []
+
+  // This property may not exist in the state object because of compatability with Tailwind Play
+  let transformThemeValue =
+    state.modules?.transformThemeValue?.module ?? ((_: any) => (value: any) => value)
+
+  if (fullPath[0] === 'theme' && fullPath[1]) {
+    value = transformThemeValue(fullPath[1])(value)
+  }
 
   function findAlternativePath(): string[] {
     let points = combinations('123456789'.substr(0, keys.length - 1)).map((x) =>
-      x.split('').map((x) => parseInt(x, 10))
+      x.split('').map((x) => parseInt(x, 10)),
     )
 
     let possibilities: string[][] = points
@@ -56,8 +65,8 @@ export function validateConfigPath(
       let closestValidKey = closest(
         keys[keys.length - 1],
         Object.keys(parentValue).filter(
-          (key) => validateConfigPath(state, [...parentPath, key]).isValid
-        )
+          (key) => validateConfigPath(state, [...parentPath, key]).isValid,
+        ),
       )
       if (closestValidKey) {
         suggestions.push(pathToString([...keys.slice(0, keys.length - 1), closestValidKey]))
@@ -95,7 +104,7 @@ export function validateConfigPath(
 
     if (isObject(value)) {
       let validKeys = Object.keys(value).filter(
-        (key) => validateConfigPath(state, [...keys, key], base).isValid
+        (key) => validateConfigPath(state, [...keys, key], base).isValid,
       )
       if (validKeys.length) {
         suggestions.push(...validKeys.map((validKey) => pathToString([...keys, validKey])))
@@ -157,7 +166,7 @@ export function validateConfigPath(
 export function getInvalidConfigPathDiagnostics(
   state: State,
   document: TextDocument,
-  settings: Settings
+  settings: Settings,
 ): InvalidConfigPathDiagnostic[] {
   let severity = settings.tailwindCSS.lint.invalidConfigPath
   if (severity === 'ignore') return []

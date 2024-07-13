@@ -1,8 +1,9 @@
-import type { TextDocuments, Connection, Range, SymbolInformation } from 'vscode-languageserver'
+import type { Connection, Range, SymbolInformation } from 'vscode-languageserver'
 import type { TextDocument } from 'vscode-languageserver-textdocument'
 import type { Postcss } from 'postcss'
-import { KeywordColor } from './color'
-import * as culori from 'culori'
+import type { KeywordColor } from './color'
+import type * as culori from 'culori'
+import type { DesignSystem } from './v4'
 
 export type ClassNamesTree = {
   [key: string]: ClassNamesTree
@@ -30,7 +31,7 @@ export type EditorState = {
   getDocumentSymbols: (uri: string) => Promise<SymbolInformation[]>
   readDirectory: (
     document: TextDocument,
-    directory: string
+    directory: string,
   ) => Promise<Array<[string, { isDirectory: boolean }]>>
 }
 
@@ -89,6 +90,7 @@ export interface Variant {
 
 export interface State {
   enabled: boolean
+  isCssConfig?: boolean
   configPath?: string
   configId?: string
   config?: any
@@ -105,6 +107,7 @@ export interface State {
     postcss?: { version: string; module: Postcss }
     postcssSelectorParser?: { module: any }
     resolveConfig?: { module: any }
+    transformThemeValue?: { module: any }
     loadConfig?: { module: any }
     jit?: {
       generateRules: { module: any }
@@ -113,6 +116,10 @@ export interface State {
       evaluateTailwindFunctions?: { module: any }
     }
   }
+
+  v4?: boolean
+  designSystem?: DesignSystem
+
   browserslist?: string[]
   featureFlags?: FeatureFlags
   classNames?: ClassNames

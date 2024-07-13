@@ -1,40 +1,40 @@
-import * as fs from 'fs'
-import { CachedInputFileSystem, ResolverFactory, Resolver, ResolveOptions } from 'enhanced-resolve-301'
-import { equal } from 'tailwindcss-language-service/src/util/array'
+import { equal } from '@tailwindcss/language-service/src/util/array'
+import * as path from 'node:path'
+import { createResolver } from './resolve'
 
 let pnpApi: any
 let extensions = Object.keys(require.extensions)
 
-function createResolver(options: Partial<ResolveOptions> = {}): Resolver {
-  return ResolverFactory.createResolver({
-    fileSystem: new CachedInputFileSystem(fs, 4000),
-    useSyncFileSystemCalls: true,
-    // cachePredicate: () => false,
-    conditionNames: ['node', 'require'],
-    extensions,
-    pnpApi,
-    ...options,
-  })
+function recreateResolver() {
+  return createResolver({ extensions, pnpApi })
 }
 
-let resolver = createResolver()
+let resolver = recreateResolver()
 
 export function setPnpApi(newPnpApi: any): void {
   pnpApi = newPnpApi
-  resolver = createResolver()
+  resolver = recreateResolver()
 }
 
 export default function resolveFrom(from?: string, id?: string): string {
+  // Network share path on Windows
   if (id.startsWith('\\\\')) return id
+
+  // Normalized network share path on Windows
+  if (id.startsWith('//') && path.sep === '\\') return id
+
+  // Normalized network share path on Windows
+  if (from.startsWith('//') && path.sep === '\\') {
+    from = '\\\\' + from.slice(2)
+  }
 
   let newExtensions = Object.keys(require.extensions)
   if (!equal(newExtensions, extensions)) {
     extensions = newExtensions
-    resolver = createResolver()
+    resolver = recreateResolver()
   }
 
   let result = resolver.resolveSync({}, from, id)
   if (result === false) throw Error()
-  // https://github.com/webpack/enhanced-resolve/issues/282
-  return result.replace(/\0#/g, '#')
+  return result
 }

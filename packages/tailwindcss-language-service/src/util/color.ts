@@ -1,12 +1,13 @@
 import dlv from 'dlv'
-import { State } from './state'
+import type { State } from './state'
 import removeMeta from './removeMeta'
-import { ensureArray, dedupe, flatten } from './array'
+import { ensureArray, dedupe } from './array'
 import type { Color } from 'vscode-languageserver'
 import { getClassNameParts } from './getClassNameAtPosition'
 import * as jit from './jit'
 import * as culori from 'culori'
 import namedColors from 'color-name'
+import postcss from 'postcss'
 
 const COLOR_PROPS = [
   'accent-color',
@@ -42,29 +43,43 @@ function getKeywordColor(value: unknown): KeywordColor | null {
 
 // https://github.com/khalilgharbaoui/coloregex
 const colorRegex = new RegExp(
-  `(?:^|\\s|\\(|,)(#(?:[0-9a-f]{2}){2,4}|(#[0-9a-f]{3})|(rgb|hsl)a?\\(\\s*(-?[\\d.]+%?(\\s*[,/]\\s*|\\s+)+){2,3}\\s*([\\d.]+%?|var\\([^)]+\\))?\\)|transparent|currentColor|${Object.keys(
-    namedColors
+  `(?:^|\\s|\\(|,)(#(?:[0-9a-f]{2}){2,4}|(#[0-9a-f]{3})|(rgba?|hsla?|(?:ok)?(?:lab|lch))\\(\\s*(-?[\\d.]+%?(\\s*[,/]\\s*|\\s+)+){2,3}\\s*([\\d.]+%?|var\\([^)]+\\))?\\)|transparent|currentColor|${Object.keys(
+    namedColors,
   ).join('|')})(?:$|\\s|\\)|,)`,
-  'gi'
+  'gi',
 )
 
 function replaceColorVarsWithTheirDefaults(str: string): string {
   // rgb(var(--primary, 66 66 66))
   // -> rgb(66 66 66)
-  return str.replace(/((?:rgb|hsl)a?\(\s*)var\([^,]+,\s*([^)]+)\)/gi, '$1$2')
+  return str.replace(/((?:rgba?|hsla?|(?:ok)?(?:lab|lch))\(\s*)var\([^,]+,\s*([^)]+)\)/gi, '$1$2')
+}
+
+function replaceHexColorVarsWithTheirDefaults(str: string): string {
+  // var(--color-red-500, #ef4444)
+  // -> #ef4444
+  return str.replace(/var\([^,]+,\s*(#[^)]+)\)/gi, '$1')
 }
 
 function getColorsInString(str: string): (culori.Color | KeywordColor)[] {
   if (/(?:box|drop)-shadow/.test(str)) return []
 
-  return Array.from(replaceColorVarsWithTheirDefaults(str).matchAll(colorRegex), (match) => {
+  function toColor(match: RegExpMatchArray) {
     let color = match[1].replace(/var\([^)]+\)/, '1')
     return getKeywordColor(color) ?? culori.parse(color)
-  }).filter(Boolean)
+  }
+
+  str = replaceHexColorVarsWithTheirDefaults(str)
+  str = replaceColorVarsWithTheirDefaults(str)
+  str = removeColorMixWherePossible(str)
+
+  let possibleColors = str.matchAll(colorRegex)
+
+  return Array.from(possibleColors, toColor).filter(Boolean)
 }
 
 function getColorFromDecls(
-  decls: Record<string, string | string[]>
+  decls: Record<string, string | string[]>,
 ): culori.Color | KeywordColor | null {
   let props = Object.keys(decls).filter((prop) => {
     // ignore content: "";
@@ -100,8 +115,8 @@ function getColorFromDecls(
   // check that all of the values are the same color, ignoring alpha
   const colorStrings = dedupe(
     colors.map((color) =>
-      typeof color === 'string' ? color : culori.formatRgb({ ...color, alpha: undefined })
-    )
+      typeof color === 'string' ? color : culori.formatRgb({ ...color, alpha: undefined }),
+    ),
   )
   if (colorStrings.length !== 1) {
     return null
@@ -113,7 +128,7 @@ function getColorFromDecls(
   }
 
   const nonKeywordColors = colors.filter(
-    (color): color is culori.Color => typeof color !== 'string'
+    (color): color is culori.Color => typeof color !== 'string',
   )
 
   const alphas = dedupe(nonKeywordColors.map((color) => color.alpha ?? 1))
@@ -129,7 +144,50 @@ function getColorFromDecls(
   return null
 }
 
+function getColorFromRoot(state: State, css: postcss.Root): culori.Color | KeywordColor | null {
+  // Remove any `@property` rules
+  css = css.clone()
+  css.walkAtRules((rule) => {
+    // Ignore declarations inside `@property` rules
+    if (rule.name === 'property') {
+      rule.remove()
+    }
+
+    // Ignore declarations @supports (-moz-orient: inline)
+    // this is a hack used for `@property` fallbacks in Firefox
+    if (rule.name === 'supports' && rule.params === '(-moz-orient: inline)') {
+      rule.remove()
+    }
+  })
+
+  let decls: Record<string, string[]> = {}
+
+  let rule = postcss.rule({
+    selector: '.x',
+    nodes: [],
+  })
+
+  css.walkDecls((decl) => {
+    rule.append(decl.clone())
+  })
+
+  css.walkDecls((decl) => {
+    decls[decl.prop] ??= []
+    decls[decl.prop].push(decl.value)
+  })
+
+  return getColorFromDecls(decls)
+}
+
 export function getColor(state: State, className: string): culori.Color | KeywordColor | null {
+  if (state.v4) {
+    let css = state.designSystem.compile([className])[0]
+
+    let color = getColorFromRoot(state, css)
+
+    return color
+  }
+
   if (state.jit) {
     if (state.classNames) {
       const item = dlv(state.classNames.classNames, [className, '__info'])
@@ -138,7 +196,16 @@ export function getColor(state: State, className: string): culori.Color | Keywor
       }
     }
 
-    let { root, rules } = jit.generateRules(state, [className])
+    let result!: ReturnType<typeof jit.generateRules>
+    try {
+      result = jit.generateRules(state, [className])
+    } catch (err) {
+      console.error(`Error generating rules for className: ${className}`)
+      console.error(err)
+      return null
+    }
+
+    let { root, rules } = result
     if (rules.length === 0) return null
 
     let decls: Record<string, string | string[]> = {}
@@ -176,7 +243,7 @@ export function getColorFromValue(value: unknown): culori.Color | KeywordColor |
     return 'currentColor'
   }
   if (
-    !/^\s*(?:rgba?|hsla?)\s*\([^)]+\)\s*$/.test(trimmedValue) &&
+    !/^\s*(?:rgba?|hsla?|(?:ok)?(?:lab|lch))\s*\([^)]+\)\s*$/.test(trimmedValue) &&
     !/^\s*#[0-9a-f]+\s*$/i.test(trimmedValue) &&
     !Object.keys(namedColors).includes(trimmedValue)
   ) {
@@ -189,6 +256,30 @@ export function getColorFromValue(value: unknown): culori.Color | KeywordColor |
 let toRgb = culori.converter('rgb')
 
 export function culoriColorToVscodeColor(color: culori.Color): Color {
-  let rgb = toRgb(color)
+  let rgb = culori.clampRgb(toRgb(color))
   return { red: rgb.r, green: rgb.g, blue: rgb.b, alpha: rgb.alpha ?? 1 }
+}
+
+export function formatColor(color: culori.Color): string {
+  if (color.alpha === undefined || color.alpha === 1) {
+    return culori.formatHex(color)
+  }
+
+  return culori.formatHex8(color)
+}
+
+const COLOR_MIX_REGEX = /color-mix\(in srgb, (.*?) (\d+|\.\d+|\d+\.\d+)%, transparent\)/g
+
+function removeColorMixWherePossible(str: string) {
+  return str.replace(COLOR_MIX_REGEX, (match, color, percentage) => {
+    if (color.startsWith('var(')) return match
+
+    let parsed = culori.parse(color)
+    if (!parsed) return match
+
+    let alpha = Number(percentage) / 100
+    if (Number.isNaN(alpha)) return match
+
+    return culori.formatRgb({ ...parsed, alpha })
+  })
 }

@@ -1,10 +1,9 @@
 import type { Plugin } from 'postcss'
 import parseValue from 'postcss-value-parser'
 import { parse as parseMediaQueryList } from '@csstools/media-query-list-parser'
-import postcss from 'postcss'
 import { isTokenNode } from '@csstools/css-parser-algorithms'
-
-type Comment = { index: number; value: string }
+import type { Comment } from './comments'
+import { applyComments } from './comments'
 
 export function addPixelEquivalentsToValue(value: string, rootFontSize: number): string {
   if (!value.includes('rem')) {
@@ -21,42 +20,13 @@ export function addPixelEquivalentsToValue(value: string, rootFontSize: number):
       return false
     }
 
-    let commentStr = `/* ${parseFloat(unit.number) * rootFontSize}px */`
+    let commentStr = ` /* ${parseFloat(unit.number) * rootFontSize}px */`
     value = value.slice(0, node.sourceEndIndex) + commentStr + value.slice(node.sourceEndIndex)
 
     return false
   })
 
   return value
-}
-
-export function addPixelEquivalentsToCss(css: string, rootFontSize: number): string {
-  if (!css.includes('em')) {
-    return css
-  }
-
-  let comments: Comment[] = []
-
-  try {
-    postcss([postcssPlugin({ comments, rootFontSize })]).process(css, { from: undefined }).css
-  } catch {
-    return css
-  }
-
-  return applyComments(css, comments)
-}
-
-function applyComments(str: string, comments: Comment[]): string {
-  let offset = 0
-
-  for (let comment of comments) {
-    let index = comment.index + offset
-    let commentStr = `/* ${comment.value} */`
-    str = str.slice(0, index) + commentStr + str.slice(index)
-    offset += commentStr.length
-  }
-
-  return str
 }
 
 function getPixelEquivalentsForMediaQuery(params: string, rootFontSize: number): Comment[] {
@@ -91,7 +61,7 @@ export function addPixelEquivalentsToMediaQuery(query: string, rootFontSize: num
   })
 }
 
-function postcssPlugin({
+export function equivalentPixelValues({
   comments,
   rootFontSize,
 }: {
@@ -111,8 +81,8 @@ function postcssPlugin({
             ({ index, value }) => ({
               index: index + atRule.source.start.offset + `@media${atRule.raws.afterName}`.length,
               value,
-            })
-          )
+            }),
+          ),
         )
       },
     },
@@ -144,4 +114,4 @@ function postcssPlugin({
     },
   }
 }
-postcssPlugin.postcss = true
+equivalentPixelValues.postcss = true
